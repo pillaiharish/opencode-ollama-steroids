@@ -36,9 +36,9 @@ if [[ -n "$ATTACH_URL" ]]; then
 fi
 
 print "==> Running minimax-builder for ${PROJECT_SLUG}/${PROMPT_ID}"
-scripts/run_builder.zsh "$PROJECT_SLUG" "$PROMPT_ID" "${ATTACH_ARGS[@]}"
+zsh scripts/run_builder.zsh "$PROJECT_SLUG" "$PROMPT_ID" "${ATTACH_ARGS[@]}"
 
 print "==> Running glm-reviewer for ${PROJECT_SLUG}/${PROMPT_ID}"
-scripts/run_reviewer.zsh "$PROJECT_SLUG" "$PROMPT_ID" "${ATTACH_ARGS[@]}"
+zsh scripts/run_reviewer.zsh "$PROJECT_SLUG" "$PROMPT_ID" "${ATTACH_ARGS[@]}"
 
 print "==> Done. Inspect agent-sessions/${PROJECT_SLUG}/${PROMPT_ID}. Raw logs are gitignored."

@@ -28,7 +28,7 @@ PATTERNS: list[tuple[str, re.Pattern[str], str]] = [
     ("raw-log-file", re.compile(r"\b[A-Za-z0-9._-]+\.raw\.log\b"), "<REDACTED_RAW_LOG_REFERENCE>"),
     ("events-jsonl-file", re.compile(r"\b[A-Za-z0-9._-]+\.events\.jsonl\b"), "<REDACTED_EVENT_LOG_REFERENCE>"),
     ("opencode-session-export", re.compile(r"\bopencode-session-[A-Za-z0-9._-]+\.json\b"), "<REDACTED_SESSION_EXPORT>"),
-    ("screenshot-reference", re.compile(r"\b[^\s]+\.(png|jpg|jpeg|webp)\b", re.IGNORECASE), "<REDACTED_SCREENSHOT_REFERENCE>"),
+    ("screenshot-reference", re.compile(r"\b[^\s]+\.(png|jpg|jpeg|webp)\b", re.IGNORECASE), "<REDACTED_SCREENSHOT_PATH>"),
 ]
 
 TEXT_SUFFIXES = {

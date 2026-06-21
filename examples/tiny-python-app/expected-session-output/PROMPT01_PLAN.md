@@ -1,5 +1,7 @@
 # PROMPT01 Plan
 
+Fake/public-safe example output only.
+
 Decision: proceed with a minimal health endpoint.
 
 Planned work:

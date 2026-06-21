@@ -13,6 +13,7 @@ REQUIRED_FILES = [
     "CONTRIBUTING.md",
     "CODE_OF_CONDUCT.md",
     ".gitignore",
+    ".github/workflows/sanity.yml",
     "AGENTS.md",
     "opencode.json",
     "project.local.env.example",
@@ -37,6 +38,7 @@ REQUIRED_FILES = [
     "docs/redaction-checklist.md",
     "docs/screenshots-policy.md",
     "docs/model-matrix.md",
+    "docs/release-checklist.md",
     "examples/tiny-python-app/README.md",
 ]
 

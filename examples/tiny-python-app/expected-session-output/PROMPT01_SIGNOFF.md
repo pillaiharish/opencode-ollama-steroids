@@ -1,5 +1,7 @@
 # PROMPT01 Signoff
 
+Fake/public-safe example output only.
+
 Decision: `SIGNED_OFF`
 
 Reviewer notes:

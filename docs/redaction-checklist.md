@@ -31,6 +31,19 @@ Check for:
 - private registry URLs;
 - comments containing sensitive detail.
 
+## Redaction Placeholders
+
+The redaction tooling uses these safe placeholder strings. They are labels only, not real values:
+
+```text
+<REDACTED_LOCAL_PATH>
+<REDACTED_EMAIL>
+<REDACTED_SECRET>
+<REDACTED_ENV_VALUE>
+<REDACTED_PRIVATE_KEY>
+<REDACTED_SCREENSHOT_PATH>
+```
+
 ## Screenshots
 
 Check for:

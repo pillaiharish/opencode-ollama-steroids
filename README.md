@@ -35,7 +35,7 @@ The models matter, but the receipts matter more. The point is to make agent mist
 Install OpenCode and Ollama, then check your local tools:
 
 ```zsh
-scripts/doctor.zsh
+zsh scripts/doctor.zsh
 ```
 
 Create a local project config:
@@ -49,32 +49,38 @@ Edit `project.local.env` for your own machine. Keep it uncommitted.
 Create a prompt folder:
 
 ```zsh
-scripts/new_prompt.zsh project-slug prompt01 "Add a health check, tests, docs, and reviewer signoff."
+zsh scripts/new_prompt.zsh tiny-python-app prompt01 "Add a health endpoint"
 ```
 
 Run the builder:
 
 ```zsh
-scripts/run_builder.zsh project-slug prompt01
+zsh scripts/run_builder.zsh tiny-python-app prompt01
 ```
 
 Run the reviewer:
 
 ```zsh
-scripts/run_reviewer.zsh project-slug prompt01
+zsh scripts/run_reviewer.zsh tiny-python-app prompt01
 ```
 
 Or run both in sequence:
 
 ```zsh
-scripts/run_prompt_agents.zsh project-slug prompt01
+zsh scripts/run_prompt_agents.zsh tiny-python-app prompt01
 ```
 
 For repeated runs, start a local headless server:
 
 ```zsh
-scripts/start_headless_server.zsh
-scripts/run_builder.zsh project-slug prompt01 --attach http://localhost:4096
+zsh scripts/start_headless_server.zsh
+zsh scripts/run_builder.zsh tiny-python-app prompt01 --attach http://localhost:4096
+```
+
+The examples use `zsh scripts/...` so they do not depend on executable permissions. You may optionally run:
+
+```zsh
+chmod +x scripts/*.zsh
 ```
 
 ## Expected Structure
@@ -106,7 +112,7 @@ Use relative paths only. Keep product edits under `product-repo/` or the product
 ## Creating Prompts
 
 ```zsh
-scripts/new_prompt.zsh <project-slug> <prompt-id> ["Task description"]
+zsh scripts/new_prompt.zsh <project-slug> <prompt-id> ["Task description"]
 ```
 
 The script creates:
@@ -125,29 +131,39 @@ The generated files are local working material and are ignored by default. Publi
 Builder:
 
 ```zsh
-scripts/run_builder.zsh <project-slug> <prompt-id>
+zsh scripts/run_builder.zsh <project-slug> <prompt-id>
 ```
 
 Reviewer:
 
 ```zsh
-scripts/run_reviewer.zsh <project-slug> <prompt-id>
+zsh scripts/run_reviewer.zsh <project-slug> <prompt-id>
 ```
 
 Both:
 
 ```zsh
-scripts/run_prompt_agents.zsh <project-slug> <prompt-id>
+zsh scripts/run_prompt_agents.zsh <project-slug> <prompt-id>
 ```
 
 With a local server:
 
 ```zsh
-scripts/start_headless_server.zsh
-scripts/run_prompt_agents.zsh <project-slug> <prompt-id> --attach http://localhost:4096
+zsh scripts/start_headless_server.zsh
+zsh scripts/run_prompt_agents.zsh <project-slug> <prompt-id> --attach http://localhost:4096
 ```
 
 The scripts write raw logs under the session folder. Raw logs are ignored and must not be published.
+
+You can override models without editing files:
+
+```zsh
+BUILDER_MODEL=ollama/qwen2.5-coder:7b \
+REVIEWER_MODEL=ollama/glm-5.1:cloud \
+zsh scripts/run_prompt_agents.zsh tiny-python-app prompt01
+```
+
+Alternate models are not benchmarked in this repo yet.
 
 ## Docs
 
@@ -159,6 +175,7 @@ The scripts write raw logs under the session folder. Raw logs are ignored and mu
 - [Screenshots policy](docs/screenshots-policy.md): safe screenshot handling.
 - [MCP playbook](docs/mcp-playbook.md): tool and MCP hygiene.
 - [Model matrix](docs/model-matrix.md): default builder/reviewer models and current limits.
+- [Release checklist](docs/release-checklist.md): repeatable checks before tagging or publishing.
 
 ## Redaction Before Publishing
 

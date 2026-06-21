@@ -4,6 +4,7 @@ set -euo pipefail
 PROJECT_SLUG="${1:-}"
 PROMPT_ID="${2:-}"
 ATTACH_URL=""
+BUILDER_MODEL="${BUILDER_MODEL:-ollama/minimax-m3:cloud}"
 
 if [[ -z "$PROJECT_SLUG" || -z "$PROMPT_ID" ]]; then
   echo "Usage: scripts/run_builder.zsh <project-slug> <prompt-id> [--attach http://localhost:4096]" >&2
@@ -53,7 +54,7 @@ fi
 mkdir -p "$SESSION_DIR"
 
 opencode run \
-  --model ollama/minimax-m3:cloud \
+  --model "$BUILDER_MODEL" \
   --agent minimax-builder \
   --dir . \
   "${OPENCODE_ATTACH_ARGS[@]}" \

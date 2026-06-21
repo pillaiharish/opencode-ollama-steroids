@@ -1,0 +1,37 @@
+name: sanity
+
+on:
+  push:
+    branches:
+      - main
+  pull_request:
+    branches:
+      - main
+
+jobs:
+  sanity:
+    runs-on: ubuntu-latest
+
+    steps:
+      - name: Check out repository
+        uses: actions/checkout@v4
+
+      - name: Set up Python
+        uses: actions/setup-python@v5
+        with:
+          python-version: "3.12"
+
+      - name: Validate public pack
+        run: python3 scripts/validate_public_pack.py .
+
+      - name: Compile Python scripts
+        run: python3 -m py_compile scripts/*.py
+
+      - name: Install zsh
+        run: sudo apt-get update && sudo apt-get install -y zsh
+
+      - name: Check zsh syntax
+        run: zsh -n scripts/*.zsh
+
+      - name: Run tiny example tests
+        run: python3 -m unittest discover -s examples/tiny-python-app/product-repo/tests

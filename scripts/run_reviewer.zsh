@@ -4,6 +4,7 @@ set -euo pipefail
 PROJECT_SLUG="${1:-}"
 PROMPT_ID="${2:-}"
 ATTACH_URL=""
+REVIEWER_MODEL="${REVIEWER_MODEL:-ollama/glm-5.1:cloud}"
 
 if [[ -z "$PROJECT_SLUG" || -z "$PROMPT_ID" ]]; then
   echo "Usage: scripts/run_reviewer.zsh <project-slug> <prompt-id> [--attach http://localhost:4096]" >&2
@@ -53,7 +54,7 @@ fi
 mkdir -p "$SESSION_DIR"
 
 opencode run \
-  --model ollama/glm-5.1:cloud \
+  --model "$REVIEWER_MODEL" \
   --agent glm-reviewer \
   --dir . \
   "${OPENCODE_ATTACH_ARGS[@]}" \

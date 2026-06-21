@@ -5,7 +5,7 @@ This guide sets up the control workspace, creates one prompt folder, and runs th
 ## 1. Check tools
 
 ```zsh
-scripts/doctor.zsh
+zsh scripts/doctor.zsh
 ```
 
 You need OpenCode, Ollama, Python 3, and zsh.
@@ -21,7 +21,7 @@ Edit `project.local.env` for your local product repo. Keep it uncommitted.
 ## 3. Create a prompt
 
 ```zsh
-scripts/new_prompt.zsh project-slug prompt01 "Add a health endpoint, tests, docs, and reviewer signoff."
+zsh scripts/new_prompt.zsh project-slug prompt01 "Add a health endpoint, tests, docs, and reviewer signoff."
 ```
 
 This creates:
@@ -38,19 +38,19 @@ agent-sessions/project-slug/prompt01/
 Builder:
 
 ```zsh
-scripts/run_builder.zsh project-slug prompt01
+zsh scripts/run_builder.zsh project-slug prompt01
 ```
 
 Reviewer:
 
 ```zsh
-scripts/run_reviewer.zsh project-slug prompt01
+zsh scripts/run_reviewer.zsh project-slug prompt01
 ```
 
 Both:
 
 ```zsh
-scripts/run_prompt_agents.zsh project-slug prompt01
+zsh scripts/run_prompt_agents.zsh project-slug prompt01
 ```
 
 ## 5. Validate before publishing
