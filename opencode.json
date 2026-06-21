@@ -1,0 +1,137 @@
+{
+  "$schema": "https://opencode.ai/config.json",
+  "model": "ollama/minimax-m3:cloud",
+  "small_model": "ollama/glm-5.1:cloud",
+  "default_agent": "minimax-builder",
+  "share": "disabled",
+  "instructions": [
+    "AGENTS.md"
+  ],
+  "enabled_providers": [
+    "ollama"
+  ],
+  "watcher": {
+    "ignore": [
+      ".git/**",
+      "node_modules/**",
+      "dist/**",
+      "build/**",
+      "coverage/**",
+      "agent-sessions/**",
+      "screenshots/**",
+      "*.log"
+    ]
+  },
+  "permission": {
+    "*": "ask",
+    "read": "allow",
+    "grep": "allow",
+    "glob": "allow",
+    "edit": {
+      "*": "ask"
+    },
+    "bash": {
+      "*": "ask",
+      "git status*": "allow",
+      "git diff*": "allow",
+      "git log*": "allow",
+      "git show*": "allow",
+      "git commit*": "deny",
+      "git push*": "deny",
+      "git rebase*": "deny",
+      "git reset --hard*": "deny",
+      "git checkout --*": "deny",
+      "rm -rf*": "deny",
+      "sudo *": "deny"
+    },
+    "webfetch": "ask",
+    "websearch": "ask",
+    "task": "ask",
+    "skill": "allow",
+    "external_directory": "deny"
+  },
+  "agent": {
+    "minimax-builder": {
+      "description": "Main planning and implementation agent. Plans, implements approved scope, runs validation, and writes implementation/test notes.",
+      "mode": "primary",
+      "model": "ollama/minimax-m3:cloud",
+      "temperature": 0.2,
+      "prompt": "{file:.opencode/agents/minimax-builder.md}",
+      "permission": {
+        "read": "allow",
+        "grep": "allow",
+        "glob": "allow",
+        "skill": "allow",
+        "edit": {
+          "*": "ask",
+          "product-repo/**": "allow",
+          "agent-sessions/**": "allow",
+          "agent-sessions/**/*_PLAN_REVIEW.md": "deny",
+          "agent-sessions/**/*_IMPLEMENTATION_REVIEW.md": "deny",
+          "agent-sessions/**/*_SIGNOFF.md": "deny"
+        },
+        "bash": {
+          "*": "ask",
+          "python*": "allow",
+          "python3*": "allow",
+          "zsh -n scripts/*.zsh": "allow",
+          "scripts/validation.example.zsh": "allow",
+          "git status*": "allow",
+          "git diff*": "allow",
+          "git log*": "allow",
+          "git show*": "allow",
+          "git commit*": "deny",
+          "git push*": "deny",
+          "git rebase*": "deny",
+          "git reset --hard*": "deny",
+          "git checkout --*": "deny",
+          "rm -rf*": "deny",
+          "sudo *": "deny"
+        },
+        "webfetch": "ask",
+        "websearch": "ask",
+        "task": "ask",
+        "external_directory": "deny"
+      }
+    },
+    "glm-reviewer": {
+      "description": "Strict reviewer for plans, diffs, tests, generated output, screenshots, architecture boundaries, and signoff. Must not edit product code.",
+      "mode": "primary",
+      "model": "ollama/glm-5.1:cloud",
+      "temperature": 0.1,
+      "prompt": "{file:.opencode/agents/glm-reviewer.md}",
+      "permission": {
+        "read": "allow",
+        "grep": "allow",
+        "glob": "allow",
+        "skill": "allow",
+        "edit": {
+          "*": "deny",
+          "agent-sessions/**/*_PLAN_REVIEW.md": "allow",
+          "agent-sessions/**/*_IMPLEMENTATION_REVIEW.md": "allow",
+          "agent-sessions/**/*_SIGNOFF.md": "allow"
+        },
+        "bash": {
+          "*": "ask",
+          "git status*": "allow",
+          "git diff*": "allow",
+          "git log*": "allow",
+          "git show*": "allow",
+          "python3 scripts/validate_public_pack.py*": "allow",
+          "git commit*": "deny",
+          "git push*": "deny",
+          "git rebase*": "deny",
+          "git reset --hard*": "deny",
+          "git checkout --*": "deny",
+          "rm -rf*": "deny",
+          "sudo *": "deny"
+        },
+        "webfetch": "ask",
+        "websearch": "ask",
+        "task": "deny",
+        "external_directory": "deny"
+      }
+    }
+  },
+  "mcp": {}
+}
