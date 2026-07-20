@@ -169,7 +169,7 @@ To deliberately replace a prompt lock after both new models pass verification:
 zsh scripts/run_prompt_agents.zsh tiny-python-app prompt01 --refresh-models
 ```
 
-Last-known-good fallback is deliberately narrow: it is considered only when catalog discovery or refresh fails, and only for the same family selectors and exact-override context. Model readiness failures, inference failures, tool failures, and invalid exact overrides fail closed instead of hiding a broken candidate. A failed explicit refresh preserves the previous lock byte-for-byte. The resolver never crosses model families or downloads local heavyweight variants.
+Last-known-good fallback is deliberately narrow: it is considered only when catalog discovery or refresh fails, and only for the same family selectors and exact-override context. Each selector/override context has an isolated entry in the ignored shared cache. Cache writes from different prompts are globally serialized, re-read, merged, and atomically replaced so one successful writer cannot discard another context's tested records. Model readiness failures, inference failures, tool failures, and invalid exact overrides fail closed instead of hiding a broken candidate. A failed explicit refresh preserves the previous lock byte-for-byte. The resolver never crosses model families or downloads local heavyweight variants.
 
 A locked ID missing from a later catalog is not treated as proof that the runtime model disappeared. Normal reuse checks the exact locked cloud manifest and keeps the lock if it is runnable. If the OpenCode version, Ollama version, or resolver verification version changes, the same locked pair is re-smoked; it is not silently upgraded.
 
@@ -190,7 +190,7 @@ python3 scripts/model_resolver.py status --session-dir agent-sessions/tiny-pytho
 python3 scripts/model_resolver.py get --session-dir agent-sessions/tiny-python-app/prompt01 --prompt-id prompt01 --role builder
 ```
 
-`status` emits compact JSON and `get` emits one exact model ID on stdout; warnings go to stderr. If resolution fails, run `zsh scripts/doctor.zsh`, inspect the error, correct the family or exact cloud override if necessary, and use `--refresh-models` only when you intentionally want to replace an existing prompt pair. Never hand-edit resolver-owned locks or caches.
+`status` emits compact JSON and `get` emits one exact model ID on stdout; both are diagnostic commands. Supported launchers consume builder and reviewer together from one immutable `resolve` result and do not reconstruct a pair with separate `get` calls. Warnings go to stderr. If resolution fails, run `zsh scripts/doctor.zsh`, inspect the error, correct the family or exact cloud override if necessary, and use `--refresh-models` only when you intentionally want to replace an existing prompt pair. Never hand-edit resolver-owned locks or caches.
 
 OpenCode update checks are notification-only and can vary by installation method. The resolver never upgrades OpenCode automatically; after a human-managed upgrade, it re-verifies the existing prompt pair before the next run.
 

@@ -4,6 +4,7 @@ from __future__ import annotations
 
 import argparse
 import fcntl
+import hashlib
 import json
 import os
 import re
@@ -16,7 +17,9 @@ from pathlib import Path
 from typing import Any
 
 
-SCHEMA_VERSION = 2
+PROMPT_LOCK_SCHEMA_VERSION = 2
+CACHE_SCHEMA_VERSION = 3
+LEGACY_CACHE_SCHEMA_VERSION = 2
 RESOLVER_VERSION = "2.1"
 PROVIDER_ID = "ollama"
 DEFAULT_BUILDER_FAMILY = "minimax-m"
@@ -53,7 +56,7 @@ class CommandResult:
 
 
 def utc_now() -> str:
-    return datetime.now(timezone.utc).replace(microsecond=0).isoformat()
+    return datetime.now(timezone.utc).isoformat(timespec="microseconds")
 
 
 def strip_ansi(value: str) -> str:
@@ -64,9 +67,14 @@ def version_key(value: str) -> tuple[int, ...]:
     return tuple(int(part) for part in value.split("."))
 
 
-def family_candidates(catalog: str, family: str) -> list[tuple[tuple[int, ...], str]]:
+def validate_family(family: str) -> str:
     if not re.fullmatch(r"[a-z0-9][a-z0-9._-]*", family):
         raise ResolutionError(f"Invalid model family prefix: {family!r}")
+    return family
+
+
+def family_candidates(catalog: str, family: str) -> list[tuple[tuple[int, ...], str]]:
+    validate_family(family)
     pattern = re.compile(
         rf"^ollama/{re.escape(family)}(?P<version>[0-9]+(?:\.[0-9]+)*):cloud$"
     )
@@ -165,6 +173,7 @@ class Resolver:
         self.workspace = workspace
         self.state_root = state_root if state_root.is_absolute() else workspace / state_root
         self.cache_path = self.state_root / ".model-cache.json"
+        self.cache_guard_path = self.state_root / ".model-cache.lock"
         self.opencode_bin = opencode_bin
         self.ollama_bin = ollama_bin
         self.command_timeout = command_timeout
@@ -395,6 +404,329 @@ class Resolver:
             raise VerificationError(f"OpenCode controlled tool smoke failed for {model!r}")
 
     @staticmethod
+    def empty_cache() -> dict[str, Any]:
+        return {
+            "schema_version": CACHE_SCHEMA_VERSION,
+            "resolver_version": RESOLVER_VERSION,
+            "tested_models": {},
+            "last_good_by_context": {},
+        }
+
+    @staticmethod
+    def parsed_timestamp(value: Any) -> datetime | None:
+        if not isinstance(value, str):
+            return None
+        try:
+            parsed = datetime.fromisoformat(value)
+        except ValueError:
+            return None
+        return parsed if parsed.tzinfo is not None else None
+
+    @staticmethod
+    def context_payload(
+        builder_family: str,
+        reviewer_family: str,
+        builder_model: str | None,
+        reviewer_model: str | None,
+    ) -> dict[str, Any]:
+        return {
+            "provider": PROVIDER_ID,
+            "builder_family": validate_family(builder_family),
+            "reviewer_family": validate_family(reviewer_family),
+            "builder_override": builder_model,
+            "reviewer_override": reviewer_model,
+        }
+
+    @staticmethod
+    def context_key(
+        builder_family: str,
+        reviewer_family: str,
+        builder_model: str | None,
+        reviewer_model: str | None,
+    ) -> str:
+        payload = Resolver.context_payload(
+            builder_family,
+            reviewer_family,
+            builder_model,
+            reviewer_model,
+        )
+        canonical = json.dumps(payload, separators=(",", ":"), sort_keys=True)
+        return "sha256:" + hashlib.sha256(canonical.encode("utf-8")).hexdigest()
+
+    @staticmethod
+    def sanitized_tested_record(model: str, record: Any) -> dict[str, Any] | None:
+        if not isinstance(record, dict):
+            return None
+        try:
+            validate_model_id(model, "cached tested")
+        except ResolutionError:
+            return None
+        required_strings = (
+            "opencode_version",
+            "ollama_version",
+            "resolver_version",
+            "verified_at",
+        )
+        if (
+            record.get("provider") != PROVIDER_ID
+            or any(not isinstance(record.get(field), str) for field in required_strings)
+            or Resolver.parsed_timestamp(record.get("verified_at")) is None
+            or record.get("runtime_status") != "passed"
+            or record.get("inference_smoke") != "passed"
+            or record.get("tool_smoke") != "passed"
+        ):
+            return None
+        return {
+            "provider": PROVIDER_ID,
+            "opencode_version": record["opencode_version"],
+            "ollama_version": record["ollama_version"],
+            "resolver_version": record["resolver_version"],
+            "runtime_status": "passed",
+            "inference_smoke": "passed",
+            "tool_smoke": "passed",
+            "verified_at": record["verified_at"],
+        }
+
+    @staticmethod
+    def sanitized_last_good(record: Any) -> tuple[str, dict[str, Any]] | None:
+        if not isinstance(record, dict) or record.get("provider") != PROVIDER_ID:
+            return None
+        families = record.get("families")
+        overrides = record.get("overrides")
+        toolchain = record.get("toolchain")
+        builder_record = record.get("builder")
+        reviewer_record = record.get("reviewer")
+        if not all(
+            isinstance(value, dict)
+            for value in (families, overrides, toolchain, builder_record, reviewer_record)
+        ):
+            return None
+        builder_family = families.get("builder")
+        reviewer_family = families.get("reviewer")
+        if not isinstance(builder_family, str) or not isinstance(reviewer_family, str):
+            return None
+        try:
+            validate_family(builder_family)
+            validate_family(reviewer_family)
+        except ResolutionError:
+            return None
+        builder_override = overrides.get("builder")
+        reviewer_override = overrides.get("reviewer")
+        try:
+            if builder_override is not None:
+                if not isinstance(builder_override, str):
+                    return None
+                builder_override = validate_model_id(builder_override, "cached builder override")
+            if reviewer_override is not None:
+                if not isinstance(reviewer_override, str):
+                    return None
+                reviewer_override = validate_model_id(
+                    reviewer_override, "cached reviewer override"
+                )
+            pair = ModelPair(
+                validate_model_id(builder_record.get("exact_id", ""), "cached builder"),
+                validate_model_id(reviewer_record.get("exact_id", ""), "cached reviewer"),
+            )
+        except ResolutionError:
+            return None
+        if not Resolver.exact_overrides_match(pair, builder_override, reviewer_override):
+            return None
+        if (
+            builder_record.get("source") == "exact_override" and builder_override is None
+        ) or (
+            reviewer_record.get("source") == "exact_override" and reviewer_override is None
+        ):
+            return None
+        if any(
+            role.get("runtime_status") != "passed"
+            or role.get("inference_smoke") != "passed"
+            or role.get("tool_smoke") != "passed"
+            for role in (builder_record, reviewer_record)
+        ):
+            return None
+        if not all(
+            isinstance(toolchain.get(field), str) for field in ("opencode", "ollama")
+        ):
+            return None
+        verified_at = record.get("verified_at")
+        if Resolver.parsed_timestamp(verified_at) is None:
+            return None
+        key = Resolver.context_key(
+            builder_family,
+            reviewer_family,
+            builder_override,
+            reviewer_override,
+        )
+        sanitized = {
+            "provider": PROVIDER_ID,
+            "families": {"builder": builder_family, "reviewer": reviewer_family},
+            "overrides": {"builder": builder_override, "reviewer": reviewer_override},
+            "toolchain": {
+                "opencode": toolchain["opencode"],
+                "ollama": toolchain["ollama"],
+            },
+            "verified_at": verified_at,
+            "builder": {
+                "exact_id": pair.builder,
+                "runtime_status": "passed",
+                "inference_smoke": "passed",
+                "tool_smoke": "passed",
+            },
+            "reviewer": {
+                "exact_id": pair.reviewer,
+                "runtime_status": "passed",
+                "inference_smoke": "passed",
+                "tool_smoke": "passed",
+            },
+        }
+        return key, sanitized
+
+    @staticmethod
+    def normalize_cache(document: dict[str, Any] | None) -> dict[str, Any]:
+        normalized = Resolver.empty_cache()
+        if not isinstance(document, dict):
+            return normalized
+
+        tested = document.get("tested_models")
+        dropped_tested = 0
+        if isinstance(tested, dict):
+            for model, record in tested.items():
+                if not isinstance(model, str):
+                    dropped_tested += 1
+                    continue
+                sanitized = Resolver.sanitized_tested_record(model, record)
+                if sanitized is None:
+                    dropped_tested += 1
+                    continue
+                normalized["tested_models"][model] = sanitized
+        elif tested is not None:
+            dropped_tested = 1
+        if dropped_tested:
+            print(
+                f"warning: ignored {dropped_tested} invalid tested-model cache record(s)",
+                file=sys.stderr,
+            )
+
+        schema = document.get("schema_version")
+        if schema == CACHE_SCHEMA_VERSION:
+            contexts = document.get("last_good_by_context")
+            if isinstance(contexts, dict):
+                for stored_key, record in contexts.items():
+                    migrated = Resolver.sanitized_last_good(record)
+                    if migrated is None or migrated[0] != stored_key:
+                        print(
+                            "warning: ignored invalid context-indexed last-known-good record",
+                            file=sys.stderr,
+                        )
+                        continue
+                    normalized["last_good_by_context"][stored_key] = migrated[1]
+            elif contexts is not None:
+                print("warning: ignored invalid last-known-good context map", file=sys.stderr)
+        elif schema == LEGACY_CACHE_SCHEMA_VERSION:
+            legacy = document.get("last_good")
+            if legacy is not None:
+                migrated = Resolver.sanitized_last_good(legacy)
+                if migrated is None:
+                    print(
+                        "warning: ignored invalid legacy last-known-good cache record",
+                        file=sys.stderr,
+                    )
+                else:
+                    normalized["last_good_by_context"][migrated[0]] = migrated[1]
+        else:
+            print(
+                "warning: unsupported model cache schema; preserving only valid tested models",
+                file=sys.stderr,
+            )
+        return normalized
+
+    def read_cache_snapshot(self) -> dict[str, Any]:
+        self.state_root.mkdir(parents=True, exist_ok=True)
+        try:
+            with self.cache_guard_path.open("a+", encoding="utf-8") as guard:
+                fcntl.flock(guard.fileno(), fcntl.LOCK_EX)
+                document = load_json(
+                    self.cache_path,
+                    "model cache",
+                    tolerate_corrupt=True,
+                )
+                return self.normalize_cache(document)
+        except OSError as exc:
+            raise ResolutionError(f"Could not read the shared model cache: {exc}") from exc
+
+    @staticmethod
+    def tested_model_updates(
+        before: dict[str, Any], after: dict[str, Any]
+    ) -> dict[str, dict[str, Any]]:
+        before_tested = before.get("tested_models", {})
+        after_tested = after.get("tested_models", {})
+        if not isinstance(before_tested, dict) or not isinstance(after_tested, dict):
+            return {}
+        return {
+            model: record
+            for model, record in after_tested.items()
+            if isinstance(model, str)
+            and isinstance(record, dict)
+            and before_tested.get(model) != record
+        }
+
+    def persist_cache_transaction(
+        self,
+        tested_updates: dict[str, dict[str, Any]],
+        last_good: dict[str, Any] | None,
+    ) -> dict[str, Any]:
+        try:
+            with self.cache_guard_path.open("a+", encoding="utf-8") as guard:
+                fcntl.flock(guard.fileno(), fcntl.LOCK_EX)
+                latest = self.normalize_cache(
+                    load_json(self.cache_path, "model cache", tolerate_corrupt=True)
+                )
+                latest_tested = latest["tested_models"]
+                for model, incoming in tested_updates.items():
+                    sanitized = self.sanitized_tested_record(model, incoming)
+                    if sanitized is None:
+                        raise ResolutionError(
+                            f"Refusing to persist invalid tested-model record for {model!r}"
+                        )
+                    existing = latest_tested.get(model)
+                    incoming_time = self.parsed_timestamp(sanitized["verified_at"])
+                    existing_time = (
+                        self.parsed_timestamp(existing.get("verified_at"))
+                        if isinstance(existing, dict)
+                        else None
+                    )
+                    if existing_time is None or (
+                        incoming_time is not None and incoming_time > existing_time
+                    ):
+                        latest_tested[model] = sanitized
+
+                if last_good is not None:
+                    migrated = self.sanitized_last_good(last_good)
+                    if migrated is None:
+                        raise ResolutionError(
+                            "Refusing to persist an invalid last-known-good context"
+                        )
+                    latest["last_good_by_context"][migrated[0]] = migrated[1]
+
+                latest["schema_version"] = CACHE_SCHEMA_VERSION
+                latest["resolver_version"] = RESOLVER_VERSION
+                atomic_write_json(self.cache_path, latest)
+                return latest
+        except ResolutionError:
+            raise
+        except OSError as exc:
+            raise ResolutionError(
+                f"Could not persist the shared model cache; the prompt lock was not changed: {exc}"
+            ) from exc
+
+    @staticmethod
+    def persist_prompt_lock(path: Path, payload: dict[str, Any]) -> None:
+        try:
+            atomic_write_json(path, payload)
+        except OSError as exc:
+            raise ResolutionError(f"Could not persist the prompt model lock: {exc}") from exc
+
+    @staticmethod
     def tested_for_toolchain(
         cache: dict[str, Any], model: str, opencode_version: str, ollama_version: str
     ) -> bool:
@@ -466,11 +798,22 @@ class Resolver:
         builder_model: str | None,
         reviewer_model: str | None,
     ) -> ModelPair | None:
-        record = cache.get("last_good")
+        contexts = cache.get("last_good_by_context")
+        if not isinstance(contexts, dict):
+            return None
+        key = Resolver.context_key(
+            builder_family,
+            reviewer_family,
+            builder_model,
+            reviewer_model,
+        )
+        record = contexts.get(key)
         if not isinstance(record, dict):
             return None
-        if record.get("provider") != PROVIDER_ID or record.get("schema_version") != SCHEMA_VERSION:
+        validated = Resolver.sanitized_last_good(record)
+        if validated is None or validated[0] != key:
             return None
+        record = validated[1]
         families = record.get("families")
         overrides = record.get("overrides")
         if not isinstance(families, dict) or not isinstance(overrides, dict):
@@ -548,7 +891,7 @@ class Resolver:
             locked_reviewer_family = lock.get("reviewer_family")
             builder_exact = lock.get("builder_model")
             reviewer_exact = lock.get("reviewer_model")
-        elif schema == SCHEMA_VERSION:
+        elif schema == PROMPT_LOCK_SCHEMA_VERSION:
             if (
                 lock.get("provider") != PROVIDER_ID
                 or lock.get("project_slug") != project_slug
@@ -581,7 +924,7 @@ class Resolver:
     def lock_verification_current(
         lock: dict[str, Any], opencode_version: str, ollama_version: str
     ) -> bool:
-        if lock.get("schema_version") != SCHEMA_VERSION:
+        if lock.get("schema_version") != PROMPT_LOCK_SCHEMA_VERSION:
             return False
         if lock.get("resolver_version") != RESOLVER_VERSION:
             return False
@@ -646,7 +989,7 @@ class Resolver:
         reviewer_override: str | None,
     ) -> dict[str, Any]:
         return {
-            "schema_version": SCHEMA_VERSION,
+            "schema_version": PROMPT_LOCK_SCHEMA_VERSION,
             "resolver_version": RESOLVER_VERSION,
             "project_slug": project_slug,
             "prompt_id": prompt_id,
@@ -670,8 +1013,7 @@ class Resolver:
         }
 
     @staticmethod
-    def update_last_good(
-        cache: dict[str, Any],
+    def build_last_good(
         pair: ModelPair,
         builder_family: str,
         reviewer_family: str,
@@ -679,13 +1021,9 @@ class Resolver:
         reviewer_model: str | None,
         opencode_version: str,
         ollama_version: str,
-    ) -> None:
+    ) -> dict[str, Any]:
         verified_at = utc_now()
-        cache["schema_version"] = SCHEMA_VERSION
-        cache["resolver_version"] = RESOLVER_VERSION
-        cache["last_good"] = {
-            "schema_version": SCHEMA_VERSION,
-            "resolver_version": RESOLVER_VERSION,
+        return {
             "provider": PROVIDER_ID,
             "families": {"builder": builder_family, "reviewer": reviewer_family},
             "overrides": {"builder": builder_model, "reviewer": reviewer_model},
@@ -705,6 +1043,57 @@ class Resolver:
             },
         }
 
+    @staticmethod
+    def locked_override_context(
+        lock: dict[str, Any], pair: ModelPair
+    ) -> tuple[str | None, str | None] | None:
+        if lock.get("schema_version") != PROMPT_LOCK_SCHEMA_VERSION:
+            return None
+        context = lock.get("override_context")
+        if not isinstance(context, dict):
+            raise ResolutionError(
+                "Prompt model lock override context is invalid; rerun with --refresh-models"
+            )
+        builder_override = context.get("builder")
+        reviewer_override = context.get("reviewer")
+        try:
+            if builder_override is not None:
+                if not isinstance(builder_override, str):
+                    raise ResolutionError("invalid builder override type")
+                builder_override = validate_model_id(
+                    builder_override, "locked builder override"
+                )
+            if reviewer_override is not None:
+                if not isinstance(reviewer_override, str):
+                    raise ResolutionError("invalid reviewer override type")
+                reviewer_override = validate_model_id(
+                    reviewer_override, "locked reviewer override"
+                )
+        except ResolutionError as exc:
+            raise ResolutionError(
+                "Prompt model lock override context is invalid; rerun with --refresh-models"
+            ) from exc
+        if not Resolver.exact_overrides_match(pair, builder_override, reviewer_override):
+            raise ResolutionError(
+                "Prompt model lock override context conflicts with its exact pair; "
+                "rerun with --refresh-models"
+            )
+        builder_record = lock.get("builder")
+        reviewer_record = lock.get("reviewer")
+        if (
+            isinstance(builder_record, dict)
+            and builder_record.get("source") == "exact_override"
+            and builder_override is None
+        ) or (
+            isinstance(reviewer_record, dict)
+            and reviewer_record.get("source") == "exact_override"
+            and reviewer_override is None
+        ):
+            raise ResolutionError(
+                "Prompt model lock override context is incomplete; rerun with --refresh-models"
+            )
+        return builder_override, reviewer_override
+
     def resolve(
         self,
         session_dir: Path,
@@ -716,6 +1105,8 @@ class Resolver:
         reviewer_model: str | None,
         refresh_models: bool,
     ) -> tuple[ModelPair, dict[str, Any]]:
+        builder_family = validate_family(builder_family)
+        reviewer_family = validate_family(reviewer_family)
         builder_model = validate_model_id(builder_model, "builder") if builder_model else None
         reviewer_model = validate_model_id(reviewer_model, "reviewer") if reviewer_model else None
         session_dir = session_dir if session_dir.is_absolute() else self.workspace / session_dir
@@ -732,19 +1123,6 @@ class Resolver:
                 "prompt model lock",
                 tolerate_corrupt=refresh_models,
             )
-            cache = load_json(self.cache_path, "model cache", tolerate_corrupt=True) or {
-                "schema_version": SCHEMA_VERSION,
-                "resolver_version": RESOLVER_VERSION,
-                "tested_models": {},
-            }
-            if cache.get("schema_version") != SCHEMA_VERSION:
-                print("warning: ignoring unsupported model cache schema", file=sys.stderr)
-                cache = {
-                    "schema_version": SCHEMA_VERSION,
-                    "resolver_version": RESOLVER_VERSION,
-                    "tested_models": {},
-                }
-
             opencode_version = self.tool_version(self.opencode_bin)
             ollama_version = self.tool_version(self.ollama_bin)
 
@@ -764,6 +1142,10 @@ class Resolver:
                     existing_lock, opencode_version, ollama_version
                 ):
                     return pair, existing_lock
+                cache = self.read_cache_snapshot()
+                cache_before = {
+                    "tested_models": dict(cache.get("tested_models", {})),
+                }
                 print(
                     "warning: prompt model verification is stale for the installed toolchain; "
                     "re-verifying the locked exact pair without catalog refresh",
@@ -776,6 +1158,22 @@ class Resolver:
                     ollama_version,
                     force_smoke=True,
                 )
+                locked_overrides = self.locked_override_context(existing_lock, pair)
+                if locked_overrides is None:
+                    lock_builder_override = builder_model
+                    lock_reviewer_override = reviewer_model
+                    last_good = None
+                else:
+                    lock_builder_override, lock_reviewer_override = locked_overrides
+                    last_good = self.build_last_good(
+                        pair,
+                        builder_family,
+                        reviewer_family,
+                        lock_builder_override,
+                        lock_reviewer_override,
+                        opencode_version,
+                        ollama_version,
+                    )
                 upgraded_lock = self.build_lock(
                     project_slug,
                     prompt_id,
@@ -788,13 +1186,20 @@ class Resolver:
                     opencode_version,
                     ollama_version,
                     None,
-                    builder_model,
-                    reviewer_model,
+                    lock_builder_override,
+                    lock_reviewer_override,
                 )
-                atomic_write_json(lock_path, upgraded_lock)
-                atomic_write_json(self.cache_path, cache)
+                self.persist_cache_transaction(
+                    self.tested_model_updates(cache_before, cache),
+                    last_good,
+                )
+                self.persist_prompt_lock(lock_path, upgraded_lock)
                 return pair, upgraded_lock
 
+            cache = self.read_cache_snapshot()
+            cache_before = {
+                "tested_models": dict(cache.get("tested_models", {})),
+            }
             catalog = ""
             catalog_models: set[str] | None = None
             builder_source = "exact_override" if builder_model else "family"
@@ -843,8 +1248,7 @@ class Resolver:
                         ) from exc
                     raise
 
-            self.update_last_good(
-                cache,
+            last_good = self.build_last_good(
                 pair,
                 builder_family,
                 reviewer_family,
@@ -868,8 +1272,11 @@ class Resolver:
                 builder_model,
                 reviewer_model,
             )
-            atomic_write_json(lock_path, lock_payload)
-            atomic_write_json(self.cache_path, cache)
+            self.persist_cache_transaction(
+                self.tested_model_updates(cache_before, cache),
+                last_good,
+            )
+            self.persist_prompt_lock(lock_path, lock_payload)
             return pair, lock_payload
 
 
@@ -931,7 +1338,7 @@ def pair_from_document(lock: dict[str, Any]) -> ModelPair:
     if lock.get("schema_version") == 1:
         builder = lock.get("builder_model")
         reviewer = lock.get("reviewer_model")
-    elif lock.get("schema_version") == SCHEMA_VERSION:
+    elif lock.get("schema_version") == PROMPT_LOCK_SCHEMA_VERSION:
         builder_record = lock.get("builder")
         reviewer_record = lock.get("reviewer")
         if not isinstance(builder_record, dict) or not isinstance(reviewer_record, dict):

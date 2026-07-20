@@ -5,6 +5,7 @@ import os
 import shutil
 import stat
 import subprocess
+import sys
 import tempfile
 import textwrap
 import unittest
@@ -162,6 +163,211 @@ class AttachedLauncherTests(unittest.TestCase):
         self.assertEqual(args[args.index("--model") + 1], "ollama/glm-5.2:cloud")
         self.assertEqual(args[args.index("--attach") + 1], "http://localhost:4096")
         self.assertNotIn("small_model", invocation["inline"])
+
+
+class AtomicResolverConsumptionTests(unittest.TestCase):
+    def setUp(self) -> None:
+        self.temporary = tempfile.TemporaryDirectory()
+        self.addCleanup(self.temporary.cleanup)
+        self.workspace = Path(self.temporary.name)
+        self.scripts = self.workspace / "scripts"
+        self.scripts.mkdir()
+        self.session = self.workspace / "agent-sessions/sample/prompt01"
+        self.session.mkdir(parents=True)
+        self.bin_dir = self.workspace / "fake-bin"
+        self.bin_dir.mkdir()
+        for name in ("model_runtime.zsh", "run_reviewer.zsh"):
+            shutil.copy2(REPOSITORY / "scripts" / name, self.scripts / name)
+        (self.workspace / "AGENTS.md").write_text("# Fake agent rules\n", encoding="utf-8")
+        (self.workspace / "opencode.json").write_text("{}\n", encoding="utf-8")
+        (self.session / "PROMPT_REVIEWER.md").write_text(
+            "Review the fake change.\n", encoding="utf-8"
+        )
+        self.lock_path = self.session / "PROMPT01_MODELS.json"
+        self.call_log = self.workspace / "resolver-calls.jsonl"
+        self.invocation_log = self.workspace / "opencode-invocation.json"
+        self.python_bin = self.bin_dir / "python3"
+        self.opencode_bin = self.bin_dir / "opencode"
+        self._write_executable(
+            self.python_bin,
+            f"""
+            #!{sys.executable}
+            import json
+            import os
+            import sys
+            from pathlib import Path
+
+            args = sys.argv[1:]
+            if args and args[0] == "-c":
+                os.execv(os.environ["REAL_PYTHON"], [os.environ["REAL_PYTHON"], *args])
+
+            if not args or args[0] != "scripts/model_resolver.py":
+                raise SystemExit(91)
+            subcommand = args[1] if len(args) > 1 else ""
+            with Path(os.environ["FAKE_RESOLVER_CALL_LOG"]).open(
+                "a", encoding="utf-8"
+            ) as handle:
+                handle.write(json.dumps({{"subcommand": subcommand, "args": args[2:]}}) + "\\n")
+
+            if subcommand == "resolve":
+                print("warning: synthetic resolver warning", file=sys.stderr)
+                Path(os.environ["FAKE_LOCK_PATH"]).write_text(
+                    json.dumps(
+                        {{
+                            "schema_version": 2,
+                            "builder": {{"exact_id": "ollama/builder-b:cloud"}},
+                            "reviewer": {{"exact_id": "ollama/reviewer-b:cloud"}},
+                        }}
+                    ),
+                    encoding="utf-8",
+                )
+                mode = os.environ.get("FAKE_RESOLVER_MODE", "success")
+                if mode == "malformed":
+                    print("{{not-json")
+                elif mode == "missing_builder":
+                    print(json.dumps({{"reviewer": "ollama/reviewer-a:cloud"}}))
+                elif mode == "missing_reviewer":
+                    print(json.dumps({{"builder": "ollama/builder-a:cloud"}}))
+                elif mode == "invalid_local":
+                    print(
+                        json.dumps(
+                            {{
+                                "builder": "ollama/builder-a:7b",
+                                "reviewer": "ollama/reviewer-a:cloud",
+                            }}
+                        )
+                    )
+                else:
+                    print(
+                        json.dumps(
+                            {{
+                                "builder": "ollama/builder-a:cloud",
+                                "reviewer": "ollama/reviewer-a:cloud",
+                            }}
+                        )
+                    )
+                raise SystemExit(0)
+
+            if subcommand == "runtime-config":
+                builder = args[args.index("--builder-model") + 1]
+                reviewer = args[args.index("--reviewer-model") + 1]
+                print(
+                    json.dumps(
+                        {{
+                            "model": builder,
+                            "agent": {{
+                                "minimax-builder": {{"model": builder}},
+                                "glm-reviewer": {{"model": reviewer}},
+                            }},
+                        }}
+                    )
+                )
+                raise SystemExit(0)
+
+            if subcommand == "get":
+                raise SystemExit(90)
+            raise SystemExit(92)
+            """,
+        )
+        self._write_executable(
+            self.opencode_bin,
+            f"""
+            #!{sys.executable}
+            import json
+            import os
+            import sys
+            from pathlib import Path
+
+            Path(os.environ["FAKE_INVOCATION_LOG"]).write_text(
+                json.dumps(
+                    {{
+                        "args": sys.argv[1:],
+                        "inline": json.loads(os.environ["OPENCODE_CONFIG_CONTENT"]),
+                    }}
+                ),
+                encoding="utf-8",
+            )
+            print("WORKFLOW_OK")
+            """,
+        )
+
+    @staticmethod
+    def _write_executable(path: Path, body: str) -> None:
+        path.write_text(textwrap.dedent(body).lstrip(), encoding="utf-8")
+        path.chmod(path.stat().st_mode | stat.S_IXUSR)
+
+    def _run(self, mode: str = "success") -> subprocess.CompletedProcess[str]:
+        environment = os.environ.copy()
+        environment.update(
+            {
+                "PATH": f"{self.bin_dir}:{environment['PATH']}",
+                "REAL_PYTHON": sys.executable,
+                "FAKE_RESOLVER_CALL_LOG": str(self.call_log),
+                "FAKE_INVOCATION_LOG": str(self.invocation_log),
+                "FAKE_LOCK_PATH": str(self.lock_path),
+                "FAKE_RESOLVER_MODE": mode,
+            }
+        )
+        return subprocess.run(
+            ["zsh", "scripts/run_reviewer.zsh", "sample", "prompt01"],
+            cwd=self.workspace,
+            env=environment,
+            text=True,
+            stdout=subprocess.PIPE,
+            stderr=subprocess.PIPE,
+            check=False,
+        )
+
+    def _calls(self) -> list[dict[str, object]]:
+        if not self.call_log.exists():
+            return []
+        return [
+            json.loads(line)
+            for line in self.call_log.read_text(encoding="utf-8").splitlines()
+        ]
+
+    def test_launcher_consumes_one_resolve_pair_even_if_prompt_lock_changes(self) -> None:
+        completed = self._run()
+        self.assertEqual(completed.returncode, 0, completed.stderr)
+        self.assertIn("synthetic resolver warning", completed.stderr)
+        calls = self._calls()
+        self.assertEqual(
+            [call["subcommand"] for call in calls],
+            ["resolve", "runtime-config"],
+        )
+        self.assertNotIn("get", [call["subcommand"] for call in calls])
+
+        changed_lock = json.loads(self.lock_path.read_text(encoding="utf-8"))
+        self.assertEqual(changed_lock["builder"]["exact_id"], "ollama/builder-b:cloud")
+        self.assertEqual(changed_lock["reviewer"]["exact_id"], "ollama/reviewer-b:cloud")
+        invocation = json.loads(self.invocation_log.read_text(encoding="utf-8"))
+        args = invocation["args"]
+        self.assertEqual(args[args.index("--model") + 1], "ollama/reviewer-a:cloud")
+        self.assertEqual(invocation["inline"]["model"], "ollama/builder-a:cloud")
+        self.assertEqual(
+            invocation["inline"]["agent"]["minimax-builder"]["model"],
+            "ollama/builder-a:cloud",
+        )
+        self.assertEqual(
+            invocation["inline"]["agent"]["glm-reviewer"]["model"],
+            "ollama/reviewer-a:cloud",
+        )
+
+    def test_invalid_resolver_output_fails_before_opencode(self) -> None:
+        for mode in ("malformed", "missing_builder", "missing_reviewer", "invalid_local"):
+            with self.subTest(mode=mode):
+                if self.call_log.exists():
+                    self.call_log.unlink()
+                if self.invocation_log.exists():
+                    self.invocation_log.unlink()
+                completed = self._run(mode)
+                self.assertNotEqual(completed.returncode, 0)
+                self.assertIn("Could not parse the atomic model resolver result", completed.stderr)
+                self.assertFalse(self.invocation_log.exists())
+                self.assertEqual(
+                    [call["subcommand"] for call in self._calls()],
+                    ["resolve"],
+                )
 
 
 class CombinedRunnerTests(unittest.TestCase):

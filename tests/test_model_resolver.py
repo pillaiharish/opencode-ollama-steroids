@@ -7,6 +7,7 @@ import subprocess
 import sys
 import tempfile
 import textwrap
+import threading
 import unittest
 from concurrent.futures import ThreadPoolExecutor
 from pathlib import Path
@@ -126,6 +127,22 @@ class CatalogTests(unittest.TestCase):
         self.assertEqual(config["model"], pair.builder)
         self.assertEqual(config["agent"]["glm-reviewer"]["model"], pair.reviewer)
         self.assertNotIn("small_model", config)
+
+    def test_context_key_is_deterministic_and_isolates_selectors(self) -> None:
+        default = Resolver.context_key("minimax-m", "glm-", None, None)
+        self.assertRegex(default, r"^sha256:[0-9a-f]{64}$")
+        self.assertEqual(
+            default,
+            Resolver.context_key("minimax-m", "glm-", None, None),
+        )
+        self.assertNotEqual(
+            default,
+            Resolver.context_key("minimax-m", "glm-", None, "ollama/glm-5.2:cloud"),
+        )
+        self.assertNotEqual(
+            default,
+            Resolver.context_key("minimax-m", "other-reviewer-", None, None),
+        )
 
     def test_structured_smoke_sentinel_rejects_extra_or_malformed_stdout(self) -> None:
         sentinel_event = json.dumps(
@@ -355,6 +372,8 @@ class ResolverLifecycleTests(unittest.TestCase):
         refresh: bool = False,
         builder_model: str | None = None,
         reviewer_model: str | None = None,
+        builder_family: str = "minimax-m",
+        reviewer_family: str = "glm-",
         resolver: Resolver | None = None,
     ) -> tuple[ModelPair, dict[str, object]]:
         with mock.patch.dict(os.environ, self.environment, clear=False):
@@ -362,8 +381,8 @@ class ResolverLifecycleTests(unittest.TestCase):
                 session_dir=Path("agent-sessions") / "sample" / prompt,
                 project_slug="sample",
                 prompt_id=prompt,
-                builder_family="minimax-m",
-                reviewer_family="glm-",
+                builder_family=builder_family,
+                reviewer_family=reviewer_family,
                 builder_model=builder_model,
                 reviewer_model=reviewer_model,
                 refresh_models=refresh,
@@ -376,6 +395,12 @@ class ResolverLifecycleTests(unittest.TestCase):
 
     def _lock_path(self, prompt: str = "prompt01") -> Path:
         return self.workspace / f"agent-sessions/sample/{prompt}/{prompt.upper()}_MODELS.json"
+
+    def _cache_path(self) -> Path:
+        return self.workspace / "agent-sessions/.model-cache.json"
+
+    def _cache(self) -> dict[str, object]:
+        return json.loads(self._cache_path().read_text(encoding="utf-8"))
 
     def test_first_run_pulls_two_stage_smokes_and_locks_pair(self) -> None:
         pair, lock = self._resolve()
@@ -402,8 +427,11 @@ class ResolverLifecycleTests(unittest.TestCase):
         )
         self.assertTrue(self._lock_path().is_file())
         cache = json.loads((self.workspace / "agent-sessions/.model-cache.json").read_text())
-        self.assertEqual(cache["last_good"]["reviewer"]["tool_smoke"], "passed")
-        self.assertEqual(cache["last_good"]["toolchain"]["ollama"], "ollama version 8.8.0")
+        context_key = Resolver.context_key("minimax-m", "glm-", None, None)
+        last_good = cache["last_good_by_context"][context_key]
+        self.assertEqual(last_good["reviewer"]["tool_smoke"], "passed")
+        self.assertEqual(last_good["toolchain"]["ollama"], "ollama version 8.8.0")
+        self.assertEqual(cache["schema_version"], 3)
         persisted = json.dumps({"lock": lock, "cache": cache})
         self.assertNotIn("OPENCODE_MODEL_SMOKE_OK", persisted)
         self.assertNotIn("OPENCODE_TOOL_SMOKE_OK:7F3A", persisted)
@@ -490,6 +518,74 @@ class ResolverLifecycleTests(unittest.TestCase):
         self.assertEqual(lock["resolution_source"], "last_known_good")
         self.assertEqual(lock["builder"]["catalog_visible"], None)
 
+    def test_default_lkg_survives_an_exact_override_context(self) -> None:
+        default_pair, _ = self._resolve(prompt="prompt01")
+        override_pair, _ = self._resolve(
+            prompt="prompt02",
+            builder_model="ollama/custom-builder:cloud",
+            reviewer_model="ollama/custom-reviewer:cloud",
+        )
+        self.assertNotEqual(default_pair, override_pair)
+
+        cache = self._cache()
+        default_key = Resolver.context_key("minimax-m", "glm-", None, None)
+        override_key = Resolver.context_key(
+            "minimax-m",
+            "glm-",
+            "ollama/custom-builder:cloud",
+            "ollama/custom-reviewer:cloud",
+        )
+        self.assertEqual(set(cache["last_good_by_context"]), {default_key, override_key})
+
+        self.environment["FAKE_CATALOG_FAIL"] = "1"
+        fallback, lock = self._resolve(prompt="prompt03")
+        self.assertEqual(fallback, default_pair)
+        self.assertEqual(lock["resolution_source"], "last_known_good")
+
+    def test_override_lkg_is_not_used_for_default_context(self) -> None:
+        self._resolve(
+            prompt="prompt01",
+            builder_model="ollama/custom-builder:cloud",
+            reviewer_model="ollama/custom-reviewer:cloud",
+        )
+        self.environment["FAKE_CATALOG_FAIL"] = "1"
+        with self.assertRaisesRegex(ResolutionError, "no matching last-known-good"):
+            self._resolve(prompt="prompt02")
+        self.assertFalse(self._lock_path("prompt02").exists())
+
+    def test_alternate_family_contexts_coexist_and_fallback_independently(self) -> None:
+        self.environment["FAKE_CATALOG"] = BASE_CATALOG + "\n".join(
+            (
+                "",
+                "ollama/other-builder-2:cloud",
+                "ollama/other-reviewer-3:cloud",
+            )
+        )
+        default_pair, _ = self._resolve(prompt="prompt01")
+        alternate_pair, _ = self._resolve(
+            prompt="prompt02",
+            builder_family="other-builder-",
+            reviewer_family="other-reviewer-",
+        )
+        self.assertEqual(
+            alternate_pair,
+            ModelPair(
+                "ollama/other-builder-2:cloud",
+                "ollama/other-reviewer-3:cloud",
+            ),
+        )
+        self.assertEqual(len(self._cache()["last_good_by_context"]), 2)
+
+        self.environment["FAKE_CATALOG_FAIL"] = "1"
+        default_fallback, _ = self._resolve(prompt="prompt03")
+        alternate_fallback, _ = self._resolve(
+            prompt="prompt04",
+            builder_family="other-builder-",
+            reviewer_family="other-reviewer-",
+        )
+        self.assertEqual(default_fallback, default_pair)
+        self.assertEqual(alternate_fallback, alternate_pair)
+
     def test_catalog_outage_without_lkg_fails_before_lock(self) -> None:
         self.environment["FAKE_CATALOG_FAIL"] = "1"
         with self.assertRaisesRegex(ResolutionError, "no matching last-known-good"):
@@ -571,7 +667,117 @@ class ResolverLifecycleTests(unittest.TestCase):
         pair, _ = self._resolve()
         self.assertEqual(pair.builder, "ollama/minimax-m3:cloud")
         rebuilt = json.loads(cache_path.read_text(encoding="utf-8"))
-        self.assertEqual(rebuilt["schema_version"], 2)
+        self.assertEqual(rebuilt["schema_version"], 3)
+
+    def test_schema_two_cache_migrates_valid_lkg_and_tested_records(self) -> None:
+        expected, _ = self._resolve(prompt="prompt01")
+        current = self._cache()
+        default_key = Resolver.context_key("minimax-m", "glm-", None, None)
+        tested_before = current["tested_models"]
+        self._cache_path().write_text(
+            json.dumps(
+                {
+                    "schema_version": 2,
+                    "resolver_version": "2.1",
+                    "tested_models": tested_before,
+                    "last_good": current["last_good_by_context"][default_key],
+                }
+            ),
+            encoding="utf-8",
+        )
+
+        self.environment["FAKE_CATALOG_FAIL"] = "1"
+        migrated_pair, lock = self._resolve(prompt="prompt02")
+        self.assertEqual(migrated_pair, expected)
+        self.assertEqual(lock["resolution_source"], "last_known_good")
+        migrated = self._cache()
+        self.assertEqual(migrated["schema_version"], 3)
+        self.assertEqual(migrated["tested_models"], tested_before)
+        self.assertEqual(set(migrated["last_good_by_context"]), {default_key})
+        self.assertNotIn("last_good", migrated)
+
+    def test_malformed_legacy_lkg_is_dropped_but_valid_tested_records_survive(self) -> None:
+        self._resolve(prompt="prompt01")
+        tested_before = self._cache()["tested_models"]
+        raw_marker = "PRIVATE_RAW_MODEL_OUTPUT_MUST_NOT_SURVIVE"
+        self._cache_path().write_text(
+            json.dumps(
+                {
+                    "schema_version": 2,
+                    "resolver_version": "2.1",
+                    "tested_models": tested_before,
+                    "last_good": {
+                        "provider": "ollama",
+                        "families": "malformed",
+                        "raw_output": raw_marker,
+                    },
+                }
+            ),
+            encoding="utf-8",
+        )
+
+        pair, _ = self._resolve(prompt="prompt02")
+        self.assertEqual(pair.reviewer, "ollama/glm-5.2:cloud")
+        migrated_text = self._cache_path().read_text(encoding="utf-8")
+        migrated = json.loads(migrated_text)
+        self.assertEqual(migrated["tested_models"], tested_before)
+        self.assertEqual(len(migrated["last_good_by_context"]), 1)
+        self.assertNotIn(raw_marker, migrated_text)
+
+    def test_cache_replace_failure_preserves_cache_and_prompt_lock(self) -> None:
+        self._resolve(prompt="prompt01")
+        cache_before = self._cache_path().read_bytes()
+        prompt_before = self._lock_path("prompt01").read_bytes()
+        real_replace = model_resolver.os.replace
+
+        def fail_cache_replace(source: Path | str, destination: Path | str) -> None:
+            if Path(destination) == self._cache_path():
+                raise OSError("simulated cache replacement interruption")
+            real_replace(source, destination)
+
+        with mock.patch.object(model_resolver.os, "replace", side_effect=fail_cache_replace):
+            with self.assertRaisesRegex(ResolutionError, "prompt lock was not changed"):
+                self._resolve(
+                    prompt="prompt01",
+                    refresh=True,
+                    builder_model="ollama/custom-builder:cloud",
+                    reviewer_model="ollama/custom-reviewer:cloud",
+                )
+
+        self.assertEqual(self._cache_path().read_bytes(), cache_before)
+        self.assertEqual(self._lock_path("prompt01").read_bytes(), prompt_before)
+        self.assertEqual(list(self._cache_path().parent.glob("*.tmp")), [])
+
+    def test_prompt_lock_replace_failure_keeps_verified_cache_transaction(self) -> None:
+        real_replace = model_resolver.os.replace
+
+        def fail_prompt_replace(source: Path | str, destination: Path | str) -> None:
+            if Path(destination) == self._lock_path("prompt01"):
+                raise OSError("simulated prompt lock replacement interruption")
+            real_replace(source, destination)
+
+        with mock.patch.object(model_resolver.os, "replace", side_effect=fail_prompt_replace):
+            with self.assertRaisesRegex(ResolutionError, "prompt model lock"):
+                self._resolve(
+                    prompt="prompt01",
+                    builder_model="ollama/custom-builder:cloud",
+                    reviewer_model="ollama/custom-reviewer:cloud",
+                )
+
+        self.assertFalse(self._lock_path("prompt01").exists())
+        cache = self._cache()
+        context_key = Resolver.context_key(
+            "minimax-m",
+            "glm-",
+            "ollama/custom-builder:cloud",
+            "ollama/custom-reviewer:cloud",
+        )
+        self.assertIn(context_key, cache["last_good_by_context"])
+        self.assertEqual(
+            set(cache["tested_models"]),
+            {"ollama/custom-builder:cloud", "ollama/custom-reviewer:cloud"},
+        )
+        self.assertEqual(list(self._lock_path("prompt01").parent.glob("*.tmp")), [])
 
     def test_opencode_version_change_reverifies_same_locked_pair(self) -> None:
         expected, _ = self._resolve()
@@ -582,6 +788,31 @@ class ResolverLifecycleTests(unittest.TestCase):
         self.assertEqual(len(self._run_records()) - count, 4)
         self.assertEqual(lock["toolchain"]["opencode"], "9.10.0")
         self.assertEqual(lock["resolution_source"], "prompt_lock_reverified")
+
+    def test_stale_lock_reverification_preserves_override_lkg_context(self) -> None:
+        expected, _ = self._resolve(builder_model="ollama/custom-builder:cloud")
+        self.environment["FAKE_OPENCODE_VERSION"] = "9.10.0"
+        pair, lock = self._resolve(builder_model="ollama/custom-builder:cloud")
+        self.assertEqual(pair, expected)
+        self.assertEqual(
+            lock["override_context"],
+            {"builder": "ollama/custom-builder:cloud", "reviewer": None},
+        )
+        context_key = Resolver.context_key(
+            "minimax-m",
+            "glm-",
+            "ollama/custom-builder:cloud",
+            None,
+        )
+        self.assertIn(context_key, self._cache()["last_good_by_context"])
+
+        self.environment["FAKE_CATALOG_FAIL"] = "1"
+        fallback, fallback_lock = self._resolve(
+            prompt="prompt02",
+            builder_model="ollama/custom-builder:cloud",
+        )
+        self.assertEqual(fallback, expected)
+        self.assertEqual(fallback_lock["resolution_source"], "last_known_good")
 
     def test_ollama_version_change_reverifies_same_locked_pair(self) -> None:
         expected, _ = self._resolve()
@@ -630,6 +861,134 @@ class ResolverLifecycleTests(unittest.TestCase):
         self.assertEqual(first_pair, second_pair)
         self.assertEqual(len(self.cataloglog.read_text(encoding="utf-8").splitlines()), 1)
         self.assertEqual(len(self._run_records()), 4)
+
+    def test_concurrent_different_context_writers_merge_without_data_loss(self) -> None:
+        self.environment["FAKE_CATALOG"] = BASE_CATALOG + "\n".join(
+            (
+                "",
+                "ollama/other-builder-2:cloud",
+                "ollama/other-reviewer-3:cloud",
+            )
+        )
+        barrier = threading.Barrier(2)
+        original_read = Resolver.read_cache_snapshot
+
+        def synchronized_read(resolver: Resolver) -> dict[str, object]:
+            snapshot = original_read(resolver)
+            barrier.wait(timeout=5)
+            return snapshot
+
+        def run(
+            resolver: Resolver,
+            prompt: str,
+            builder_family: str,
+            reviewer_family: str,
+        ) -> tuple[ModelPair, dict[str, object]]:
+            return resolver.resolve(
+                session_dir=Path("agent-sessions/sample") / prompt,
+                project_slug="sample",
+                prompt_id=prompt,
+                builder_family=builder_family,
+                reviewer_family=reviewer_family,
+                builder_model=None,
+                reviewer_model=None,
+                refresh_models=False,
+            )
+
+        with mock.patch.dict(os.environ, self.environment, clear=False):
+            with mock.patch.object(Resolver, "read_cache_snapshot", synchronized_read):
+                with ThreadPoolExecutor(max_workers=2) as pool:
+                    default = pool.submit(
+                        run,
+                        self._new_resolver(),
+                        "prompt01",
+                        "minimax-m",
+                        "glm-",
+                    )
+                    alternate = pool.submit(
+                        run,
+                        self._new_resolver(),
+                        "prompt02",
+                        "other-builder-",
+                        "other-reviewer-",
+                    )
+                    default.result(timeout=10)
+                    alternate.result(timeout=10)
+
+        cache = self._cache()
+        self.assertEqual(cache["schema_version"], 3)
+        self.assertEqual(
+            set(cache["tested_models"]),
+            {
+                "ollama/minimax-m3:cloud",
+                "ollama/glm-5.2:cloud",
+                "ollama/other-builder-2:cloud",
+                "ollama/other-reviewer-3:cloud",
+            },
+        )
+        self.assertEqual(len(cache["last_good_by_context"]), 2)
+        for prompt in ("prompt01", "prompt02"):
+            lock = json.loads(self._lock_path(prompt).read_text(encoding="utf-8"))
+            self.assertEqual(lock["schema_version"], 2)
+            self.assertEqual(lock["prompt_id"], prompt)
+
+    def test_concurrent_same_context_writers_merge_complete_pair(self) -> None:
+        barrier = threading.Barrier(2)
+        original_read = Resolver.read_cache_snapshot
+
+        def synchronized_read(resolver: Resolver) -> dict[str, object]:
+            snapshot = original_read(resolver)
+            barrier.wait(timeout=5)
+            return snapshot
+
+        def run(resolver: Resolver, prompt: str) -> tuple[ModelPair, dict[str, object]]:
+            return resolver.resolve(
+                session_dir=Path("agent-sessions/sample") / prompt,
+                project_slug="sample",
+                prompt_id=prompt,
+                builder_family="minimax-m",
+                reviewer_family="glm-",
+                builder_model=None,
+                reviewer_model=None,
+                refresh_models=False,
+            )
+
+        with mock.patch.dict(os.environ, self.environment, clear=False):
+            with mock.patch.object(Resolver, "read_cache_snapshot", synchronized_read):
+                with ThreadPoolExecutor(max_workers=2) as pool:
+                    first = pool.submit(run, self._new_resolver(), "prompt01")
+                    second = pool.submit(run, self._new_resolver(), "prompt02")
+                    first_pair, _ = first.result(timeout=10)
+                    second_pair, _ = second.result(timeout=10)
+
+        self.assertEqual(first_pair, second_pair)
+        cache = self._cache()
+        self.assertEqual(
+            set(cache["tested_models"]),
+            {"ollama/minimax-m3:cloud", "ollama/glm-5.2:cloud"},
+        )
+        self.assertEqual(len(cache["last_good_by_context"]), 1)
+        for prompt in ("prompt01", "prompt02"):
+            lock = json.loads(self._lock_path(prompt).read_text(encoding="utf-8"))
+            self.assertEqual(lock["builder"]["exact_id"], first_pair.builder)
+            self.assertEqual(lock["reviewer"]["exact_id"], first_pair.reviewer)
+
+    def test_tested_model_merge_preserves_newer_success_record(self) -> None:
+        self._resolve(prompt="prompt01")
+        cache = self._cache()
+        model = "ollama/minimax-m3:cloud"
+        newer = dict(cache["tested_models"][model])
+        newer["verified_at"] = "2099-01-01T00:00:00+00:00"
+        cache["tested_models"][model] = newer
+        self._cache_path().write_text(json.dumps(cache), encoding="utf-8")
+
+        older = dict(newer)
+        older["verified_at"] = "2020-01-01T00:00:00+00:00"
+        self.resolver.persist_cache_transaction({model: older}, None)
+        self.assertEqual(
+            self._cache()["tested_models"][model]["verified_at"],
+            newer["verified_at"],
+        )
 
     def test_cli_resolve_get_status_and_self_check_are_machine_readable(self) -> None:
         script = Path(__file__).resolve().parents[1] / "scripts/model_resolver.py"

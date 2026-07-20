@@ -36,6 +36,8 @@ resolve_prompt_models() {
   local prompt_id="$2"
   local refresh_models="${3:-0}"
   local project_slug="${4:-${session_dir:h:t}}"
+  local resolved_json resolved_lines
+  local -a resolved_models
   local resolver_args=(
     resolve
     --session-dir "$session_dir"
@@ -55,17 +57,43 @@ resolve_prompt_models() {
     resolver_args+=(--refresh-models)
   fi
 
-  if ! python3 scripts/model_resolver.py "${resolver_args[@]}" >/dev/null; then
+  if ! resolved_json="$(python3 scripts/model_resolver.py "${resolver_args[@]}")"; then
     return 1
   fi
-  if ! RESOLVED_BUILDER_MODEL="$(python3 scripts/model_resolver.py get \
-    --session-dir "$session_dir" --prompt-id "$prompt_id" --role builder)"; then
+  if ! resolved_lines="$(print -r -- "$resolved_json" | python3 -c '
+import json
+import re
+import sys
+
+try:
+    value = json.load(sys.stdin)
+except (json.JSONDecodeError, OSError) as exc:
+    raise SystemExit(f"invalid resolver JSON: {exc}")
+
+pattern = re.compile(r"^ollama/[a-z0-9][a-z0-9._/-]*:cloud$")
+if not isinstance(value, dict):
+    raise SystemExit("invalid resolver result: expected an object")
+
+builder = value.get("builder")
+reviewer = value.get("reviewer")
+if not isinstance(builder, str) or not pattern.fullmatch(builder):
+    raise SystemExit("invalid resolver result: missing strict builder cloud ID")
+if not isinstance(reviewer, str) or not pattern.fullmatch(reviewer):
+    raise SystemExit("invalid resolver result: missing strict reviewer cloud ID")
+
+print(builder)
+print(reviewer)
+')"; then
+    echo "Could not parse the atomic model resolver result." >&2
     return 1
   fi
-  if ! RESOLVED_REVIEWER_MODEL="$(python3 scripts/model_resolver.py get \
-    --session-dir "$session_dir" --prompt-id "$prompt_id" --role reviewer)"; then
+  resolved_models=("${(@f)resolved_lines}")
+  if (( ${#resolved_models[@]} != 2 )); then
+    echo "Invalid model resolver result: expected exactly two model IDs." >&2
     return 1
   fi
+  RESOLVED_BUILDER_MODEL="${resolved_models[1]}"
+  RESOLVED_REVIEWER_MODEL="${resolved_models[2]}"
   if ! OPENCODE_CONFIG_CONTENT="$(python3 scripts/model_resolver.py runtime-config \
     --builder-model "$RESOLVED_BUILDER_MODEL" \
     --reviewer-model "$RESOLVED_REVIEWER_MODEL")"; then
