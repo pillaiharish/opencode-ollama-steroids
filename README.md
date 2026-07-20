@@ -10,9 +10,10 @@ It intentionally does not include private prompts, raw session logs, real screen
 
 ## What this gives you
 
-- `opencode.json` configured for two Ollama-backed OpenCode agents.
+- `opencode.json` configured for two Ollama-backed workflow agents and two narrowly scoped compatibility probes.
 - `minimax-builder` for planning, implementation, validation, and implementation notes.
 - `glm-reviewer` for strict plan, diff, test, screenshot, and security review.
+- Update-resilient, per-prompt resolution of stable MiniMax and GLM Ollama cloud releases, with two-stage smoke tests and exact model locks.
 - Local session folders that keep prompts and receipts out of public docs.
 - Reusable `.opencode/skills/` guardrails for agent discipline, redaction, and test evidence.
 - Scripts for creating prompt folders, running agents headlessly, redacting sessions, validating the public pack, and checking local prerequisites.
@@ -70,12 +71,14 @@ Or run both in sequence:
 zsh scripts/run_prompt_agents.zsh tiny-python-app prompt01
 ```
 
-For repeated runs, start a local headless server:
+For repeated runs, start the model-agnostic local headless server:
 
 ```zsh
 zsh scripts/start_headless_server.zsh
 zsh scripts/run_builder.zsh tiny-python-app prompt01 --attach http://localhost:4096
 ```
+
+The attached runner still supplies the prompt's exact role model through `--model`; the server is not restarted or pinned per prompt.
 
 The examples use `zsh scripts/...` so they do not depend on executable permissions. You may optionally run:
 
@@ -99,6 +102,7 @@ chmod +x scripts/*.zsh
         PROMPT_CODER.md
         PROMPT_REVIEWER.md
         SESSION_README.md
+        PROMPT01_MODELS.json
         receipts and raw logs, gitignored
   product-repo/
   scripts/
@@ -155,15 +159,40 @@ zsh scripts/run_prompt_agents.zsh <project-slug> <prompt-id> --attach http://loc
 
 The scripts write raw logs under the session folder. Raw logs are ignored and must not be published.
 
-You can override models without editing files:
+On the first supported launch for a prompt, the resolver refreshes the installed OpenCode CLI's Ollama catalog and selects the highest stable numeric `:cloud` identifier matching each configured family prefix. "Highest" is a numeric component comparison, so `5.10` is later than `5.2`; previews, malformed tags, other providers, and local variants are excluded. This is a precise catalog rule, not a claim that the result is Ollama's universally newest or best model.
+
+Each previously unseen exact ID must pass cloud-manifest readiness, an exact no-tools inference sentinel, and an exact controlled-file-read tool sentinel. These probes can consume cloud quota. Only compact status metadata is retained; raw model responses are not written to locks or caches. The resolver then atomically writes the ignored `PROMPTNN_MODELS.json` receipt, and every later builder, reviewer, fix, signoff, and attached run reuses that exact pair.
+
+To deliberately replace a prompt lock after both new models pass verification:
 
 ```zsh
-BUILDER_MODEL=ollama/qwen2.5-coder:7b \
-REVIEWER_MODEL=ollama/glm-5.1:cloud \
+zsh scripts/run_prompt_agents.zsh tiny-python-app prompt01 --refresh-models
+```
+
+Last-known-good fallback is deliberately narrow: it is considered only when catalog discovery or refresh fails, and only for the same family selectors and exact-override context. Each selector/override context has an isolated entry in the ignored shared cache. Cache writes from different prompts are globally serialized, re-read, merged, and atomically replaced so one successful writer cannot discard another context's tested records. Model readiness failures, inference failures, tool failures, and invalid exact overrides fail closed instead of hiding a broken candidate. A failed explicit refresh preserves the previous lock byte-for-byte. The resolver never crosses model families or downloads local heavyweight variants.
+
+A locked ID missing from a later catalog is not treated as proof that the runtime model disappeared. Normal reuse checks the exact locked cloud manifest and keeps the lock if it is runnable. If the OpenCode version, Ollama version, or resolver verification version changes, the same locked pair is re-smoked; it is not silently upgraded.
+
+You can seed an exact pair without editing files. For an existing prompt, add `--refresh-models`; a conflicting override otherwise fails instead of silently changing models midway through the task.
+
+```zsh
+BUILDER_MODEL=ollama/minimax-m3:cloud \
+REVIEWER_MODEL=ollama/glm-5.2:cloud \
 zsh scripts/run_prompt_agents.zsh tiny-python-app prompt01
 ```
 
-Alternate models are not benchmarked in this repo yet.
+Exact overrides must be full `ollama/<model>:cloud` IDs. Family prefixes can be changed locally through `BUILDER_MODEL_FAMILY` and `REVIEWER_MODEL_FAMILY` in `project.local.env`. Alternate families are not benchmarked in this repo yet. OpenCode's separate `small_model` remains a stable bootstrap setting and is not coupled to prompt-family resolution.
+
+For resolver diagnostics without launching an agent:
+
+```zsh
+python3 scripts/model_resolver.py status --session-dir agent-sessions/tiny-python-app/prompt01 --prompt-id prompt01
+python3 scripts/model_resolver.py get --session-dir agent-sessions/tiny-python-app/prompt01 --prompt-id prompt01 --role builder
+```
+
+`status` emits compact JSON and `get` emits one exact model ID on stdout; both are diagnostic commands. Supported launchers consume builder and reviewer together from one immutable `resolve` result and do not reconstruct a pair with separate `get` calls. Warnings go to stderr. If resolution fails, run `zsh scripts/doctor.zsh`, inspect the error, correct the family or exact cloud override if necessary, and use `--refresh-models` only when you intentionally want to replace an existing prompt pair. Never hand-edit resolver-owned locks or caches.
+
+OpenCode update checks are notification-only and can vary by installation method. The resolver never upgrades OpenCode automatically; after a human-managed upgrade, it re-verifies the existing prompt pair before the next run.
 
 ## Docs
 
@@ -256,4 +285,4 @@ This project is not affiliated with OpenCode, Ollama, MiniMax, GLM, Anthropic, o
 - OpenCode permissions: <https://opencode.ai/docs/permissions/>
 - Ollama OpenCode integration: <https://docs.ollama.com/integrations/opencode>
 - MiniMax M3 on Ollama: <https://ollama.com/library/minimax-m3>
-- GLM-5.1 on Ollama: <https://ollama.com/library/glm-5.1>
+- GLM-5.2 on Ollama: <https://ollama.com/library/glm-5.2>

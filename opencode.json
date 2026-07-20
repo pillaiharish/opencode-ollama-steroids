@@ -1,7 +1,8 @@
 {
   "$schema": "https://opencode.ai/config.json",
   "model": "ollama/minimax-m3:cloud",
-  "small_model": "ollama/glm-5.1:cloud",
+  "small_model": "ollama/glm-5.2:cloud",
+  "autoupdate": "notify",
   "default_agent": "minimax-builder",
   "share": "disabled",
   "instructions": [
@@ -66,6 +67,7 @@
           "*": "ask",
           "product-repo/**": "allow",
           "agent-sessions/**": "allow",
+          "agent-sessions/**/*_MODELS.json": "deny",
           "agent-sessions/**/*_PLAN_REVIEW.md": "deny",
           "agent-sessions/**/*_IMPLEMENTATION_REVIEW.md": "deny",
           "agent-sessions/**/*_SIGNOFF.md": "deny"
@@ -97,7 +99,7 @@
     "glm-reviewer": {
       "description": "Strict reviewer for plans, diffs, tests, generated output, screenshots, architecture boundaries, and signoff. Must not edit product code.",
       "mode": "primary",
-      "model": "ollama/glm-5.1:cloud",
+      "model": "ollama/glm-5.2:cloud",
       "temperature": 0.1,
       "prompt": "{file:.opencode/agents/glm-reviewer.md}",
       "permission": {
@@ -130,6 +132,30 @@
         "websearch": "ask",
         "task": "deny",
         "external_directory": "deny"
+      }
+    },
+    "model-inference-smoke": {
+      "description": "Tools-disabled inference compatibility probe used by the model-family resolver.",
+      "mode": "primary",
+      "model": "ollama/minimax-m3:cloud",
+      "temperature": 0,
+      "prompt": "{file:.opencode/agents/model-inference-smoke.md}",
+      "permission": {
+        "*": "deny"
+      }
+    },
+    "model-tool-smoke": {
+      "description": "Read-only fixture tool-call probe used by the model-family resolver.",
+      "mode": "primary",
+      "model": "ollama/minimax-m3:cloud",
+      "temperature": 0,
+      "prompt": "{file:.opencode/agents/model-tool-smoke.md}",
+      "permission": {
+        "*": "deny",
+        "read": {
+          "*": "deny",
+          ".opencode/model-smoke/FIXTURE.txt": "allow"
+        }
       }
     }
   },

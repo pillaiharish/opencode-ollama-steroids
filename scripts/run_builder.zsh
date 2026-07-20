@@ -4,10 +4,10 @@ set -euo pipefail
 PROJECT_SLUG="${1:-}"
 PROMPT_ID="${2:-}"
 ATTACH_URL=""
-BUILDER_MODEL="${BUILDER_MODEL:-ollama/minimax-m3:cloud}"
+REFRESH_MODELS=0
 
 if [[ -z "$PROJECT_SLUG" || -z "$PROMPT_ID" ]]; then
-  echo "Usage: scripts/run_builder.zsh <project-slug> <prompt-id> [--attach http://localhost:4096]" >&2
+  echo "Usage: scripts/run_builder.zsh <project-slug> <prompt-id> [--attach http://localhost:4096] [--refresh-models]" >&2
   exit 2
 fi
 
@@ -21,6 +21,10 @@ while [[ $# -gt 0 ]]; do
         exit 2
       fi
       shift 2
+      ;;
+    --refresh-models)
+      REFRESH_MODELS=1
+      shift
       ;;
     *)
       echo "Unknown argument: $1" >&2
@@ -53,8 +57,13 @@ fi
 
 mkdir -p "$SESSION_DIR"
 
+source scripts/model_runtime.zsh
+load_model_config
+resolve_prompt_models "$SESSION_DIR" "$PROMPT_ID" "$REFRESH_MODELS" "$PROJECT_SLUG"
+
+print "==> Builder model: ${RESOLVED_BUILDER_MODEL}"
 opencode run \
-  --model "$BUILDER_MODEL" \
+  --model "$RESOLVED_BUILDER_MODEL" \
   --agent minimax-builder \
   --dir . \
   "${OPENCODE_ATTACH_ARGS[@]}" \

@@ -30,4 +30,24 @@ if [[ "$missing" -ne 0 ]]; then
   exit 1
 fi
 
+echo "ok: OpenCode version $(opencode --version 2>&1 | head -n 1)"
+echo "ok: $(ollama --version 2>&1 | head -n 1)"
+echo "ok: $(python3 --version 2>&1 | head -n 1)"
+echo "ok: $(zsh --version 2>&1 | head -n 1)"
+
+if ! opencode models --help 2>&1 | grep -q -- "--refresh"; then
+  echo "missing: this OpenCode version does not support model catalog refresh" >&2
+  echo "  Upgrade OpenCode manually, then run this script again." >&2
+  exit 1
+fi
+
+echo "ok: OpenCode model catalog refresh supported"
+
+if ! python3 scripts/model_resolver.py self-check >/dev/null; then
+  echo "missing: strict model catalog parser self-check failed" >&2
+  exit 1
+fi
+
+echo "ok: strict model catalog parser self-check passed"
+
 echo "doctor passed"

@@ -36,6 +36,7 @@ Required path rule:
 ### minimax-builder
 
 Model: `ollama/minimax-m3:cloud`
+Model family: `minimax-m`
 
 Role: planner, coder, test runner, implementation reporter.
 
@@ -71,9 +72,12 @@ Builder must never create, edit, or overwrite reviewer-only files ending in:
 - `_IMPLEMENTATION_REVIEW.md`
 - `_SIGNOFF.md`
 
+Builder and reviewer must never create, edit, or overwrite resolver-owned files ending in `_MODELS.json`.
+
 ### glm-reviewer
 
-Model: `ollama/glm-5.1:cloud`
+Model: `ollama/glm-5.2:cloud`
+Model family: `glm-`
 
 Role: strict reviewer.
 
@@ -100,15 +104,16 @@ Reviewer decision must be exactly one of:
 
 For each prompt:
 
-1. Builder plan.
-2. Reviewer plan review.
-3. Builder implementation.
-4. Builder test run.
-5. Reviewer implementation review.
-6. Builder fixes, if needed.
-7. Builder reruns failing and full validation commands.
-8. Reviewer final signoff.
-9. Human reviews and decides whether to commit.
+1. Resolve, smoke-test when needed, and pin the exact builder/reviewer model pair.
+2. Builder plan.
+3. Reviewer plan review.
+4. Builder implementation.
+5. Builder test run.
+6. Reviewer implementation review.
+7. Builder fixes, if needed.
+8. Builder reruns failing and full validation commands.
+9. Reviewer final signoff.
+10. Human reviews and decides whether to commit.
 
 ## Required session files
 
@@ -118,6 +123,12 @@ For `promptNN`, the prompt inputs are:
 agent-sessions/<project-slug>/promptNN/PROMPT_CODER.md
 agent-sessions/<project-slug>/promptNN/PROMPT_REVIEWER.md
 agent-sessions/<project-slug>/promptNN/SESSION_README.md
+```
+
+The resolver-owned model receipt is:
+
+```text
+agent-sessions/<project-slug>/promptNN/PROMPTNN_MODELS.json
 ```
 
 Receipt files should use prompt-scoped names:
@@ -132,6 +143,10 @@ agent-sessions/<project-slug>/promptNN/PROMPTNN_FIXES.md
 agent-sessions/<project-slug>/promptNN/PROMPTNN_SIGNOFF.md
 agent-sessions/<project-slug>/promptNN/CURRENT_STATE.md
 ```
+
+`PROMPTNN_MODELS.json` is resolver-owned, local, and ignored. On the prompt's first run, the supported launch scripts select the highest stable numeric `:cloud` ID in the installed OpenCode CLI's refreshed Ollama catalog for each configured family. They require exact cloud-manifest readiness plus no-tools inference and controlled-file-read smoke sentinels, then reuse that exact pair. Smoke calls may consume cloud quota. Change the pair only through `--refresh-models`; never hand-edit the lock or local cache.
+
+Exact overrides must be full `ollama/<model>:cloud` IDs and fail closed if unavailable or unverifiable. Last-known-good fallback is restricted to catalog discovery failures with matching selectors and override context. Toolchain changes re-smoke the same locked pair instead of silently selecting a replacement.
 
 Raw logs may be stored locally in the same folder, but they must remain gitignored.
 

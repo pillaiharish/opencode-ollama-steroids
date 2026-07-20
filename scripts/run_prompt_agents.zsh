@@ -4,9 +4,10 @@ set -euo pipefail
 PROJECT_SLUG="${1:-}"
 PROMPT_ID="${2:-}"
 ATTACH_URL=""
+REFRESH_MODELS=0
 
 if [[ -z "$PROJECT_SLUG" || -z "$PROMPT_ID" ]]; then
-  echo "Usage: scripts/run_prompt_agents.zsh <project-slug> <prompt-id> [--attach http://localhost:4096]" >&2
+  echo "Usage: scripts/run_prompt_agents.zsh <project-slug> <prompt-id> [--attach http://localhost:4096] [--refresh-models]" >&2
   exit 2
 fi
 
@@ -20,6 +21,10 @@ while [[ $# -gt 0 ]]; do
         exit 2
       fi
       shift 2
+      ;;
+    --refresh-models)
+      REFRESH_MODELS=1
+      shift
       ;;
     *)
       echo "Unknown argument: $1" >&2
@@ -35,8 +40,13 @@ if [[ -n "$ATTACH_URL" ]]; then
   ATTACH_ARGS=(--attach "$ATTACH_URL")
 fi
 
+REFRESH_ARGS=()
+if [[ "$REFRESH_MODELS" == "1" ]]; then
+  REFRESH_ARGS=(--refresh-models)
+fi
+
 print "==> Running minimax-builder for ${PROJECT_SLUG}/${PROMPT_ID}"
-zsh scripts/run_builder.zsh "$PROJECT_SLUG" "$PROMPT_ID" "${ATTACH_ARGS[@]}"
+zsh scripts/run_builder.zsh "$PROJECT_SLUG" "$PROMPT_ID" "${ATTACH_ARGS[@]}" "${REFRESH_ARGS[@]}"
 
 print "==> Running glm-reviewer for ${PROJECT_SLUG}/${PROMPT_ID}"
 zsh scripts/run_reviewer.zsh "$PROJECT_SLUG" "$PROMPT_ID" "${ATTACH_ARGS[@]}"

@@ -4,10 +4,10 @@ set -euo pipefail
 PROJECT_SLUG="${1:-}"
 PROMPT_ID="${2:-}"
 ATTACH_URL=""
-REVIEWER_MODEL="${REVIEWER_MODEL:-ollama/glm-5.1:cloud}"
+REFRESH_MODELS=0
 
 if [[ -z "$PROJECT_SLUG" || -z "$PROMPT_ID" ]]; then
-  echo "Usage: scripts/run_reviewer.zsh <project-slug> <prompt-id> [--attach http://localhost:4096]" >&2
+  echo "Usage: scripts/run_reviewer.zsh <project-slug> <prompt-id> [--attach http://localhost:4096] [--refresh-models]" >&2
   exit 2
 fi
 
@@ -21,6 +21,10 @@ while [[ $# -gt 0 ]]; do
         exit 2
       fi
       shift 2
+      ;;
+    --refresh-models)
+      REFRESH_MODELS=1
+      shift
       ;;
     *)
       echo "Unknown argument: $1" >&2
@@ -53,8 +57,13 @@ fi
 
 mkdir -p "$SESSION_DIR"
 
+source scripts/model_runtime.zsh
+load_model_config
+resolve_prompt_models "$SESSION_DIR" "$PROMPT_ID" "$REFRESH_MODELS" "$PROJECT_SLUG"
+
+print "==> Reviewer model: ${RESOLVED_REVIEWER_MODEL}"
 opencode run \
-  --model "$REVIEWER_MODEL" \
+  --model "$RESOLVED_REVIEWER_MODEL" \
   --agent glm-reviewer \
   --dir . \
   "${OPENCODE_ATTACH_ARGS[@]}" \
