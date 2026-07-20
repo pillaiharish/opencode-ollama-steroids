@@ -16,6 +16,7 @@ Typical files:
 PROMPT_CODER.md
 PROMPT_REVIEWER.md
 SESSION_README.md
+PROMPTNN_MODELS.json
 PROMPTNN_PLAN.md
 PROMPTNN_PLAN_REVIEW.md
 PROMPTNN_IMPLEMENTATION.md
@@ -27,6 +28,10 @@ PROMPTNN_BUILDER.raw.log
 PROMPTNN_REVIEWER.raw.log
 redacted/
 ```
+
+`PROMPTNN_MODELS.json` contains only resolver-owned provider, selector, exact-ID, override-context, resolution-source, toolchain-version, timestamp, readiness, and smoke-status metadata. It never contains raw model output. A neighboring `.PROMPTNN_MODELS.lock` serializes concurrent resolution and the root `.model-cache.json` holds compatible tested-model and last-known-good metadata. All three remain local and ignored so each prompt is reproducible without turning runtime selections into public artifacts.
+
+Do not hand-edit locks, guards, or caches. Use `--refresh-models` for an intentional transactional replacement; on failure, the prior prompt lock is preserved byte-for-byte.
 
 ## Commit publicly
 

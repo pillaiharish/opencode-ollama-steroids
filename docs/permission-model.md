@@ -27,6 +27,8 @@ It is denied reviewer-only files:
 *_SIGNOFF.md
 ```
 
+It is also denied resolver-owned prompt locks ending in `*_MODELS.json`.
+
 It can run common validation and inspection commands, but commit, push, rebase, hard reset, checkout revert, broad deletion, and privileged shell actions are denied.
 
 ## Reviewer
@@ -34,6 +36,8 @@ It can run common validation and inspection commands, but commit, push, rebase, 
 `glm-reviewer` can read and inspect the repo. It may write only review and signoff files under `agent-sessions/**`.
 
 The reviewer must not edit product code. Review commands are limited to inspection and public-pack validation.
+
+The internal `model-inference-smoke` agent has all tools denied and must return one exact inference sentinel. The separate `model-tool-smoke` agent denies all tools except reading `.opencode/model-smoke/FIXTURE.txt`; it must return one exact fixture-derived sentinel. These agents verify previously unseen or toolchain-stale exact cloud IDs before the resolver caches compact pass/fail metadata. Their raw output is not persisted.
 
 ## Practical Notes
 

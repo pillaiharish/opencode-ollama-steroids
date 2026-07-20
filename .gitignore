@@ -18,6 +18,7 @@ dist/
 build/
 coverage/
 tmp-redacted-session/
+tmp-model-test.*/
 
 !agent-sessions/
 !agent-sessions/.gitkeep

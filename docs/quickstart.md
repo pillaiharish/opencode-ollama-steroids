@@ -18,6 +18,8 @@ cp project.local.env.example project.local.env
 
 Edit `project.local.env` for your local product repo. Keep it uncommitted.
 
+The default model families are `minimax-m` for the builder and `glm-` for the reviewer. The supported launch scripts select the highest stable numeric `:cloud` ID matching each family in the refreshed catalog exposed by the installed OpenCode CLI. This is a catalog-selection rule, not a universal newest-model claim.
+
 ## 3. Create a prompt
 
 ```zsh
@@ -52,6 +54,21 @@ Both:
 ```zsh
 zsh scripts/run_prompt_agents.zsh project-slug prompt01
 ```
+
+The first run verifies unseen exact models with a no-tools inference sentinel and a controlled fixture-read sentinel, then writes `PROMPT01_MODELS.json` locally. Cloud smoke calls can consume quota. Later stages reuse that exact pair. To deliberately select later family releases for an existing prompt:
+
+```zsh
+zsh scripts/run_prompt_agents.zsh project-slug prompt01 --refresh-models
+```
+
+For a reusable localhost server:
+
+```zsh
+zsh scripts/start_headless_server.zsh
+zsh scripts/run_builder.zsh project-slug prompt01 --attach http://localhost:4096
+```
+
+The server is model-agnostic. Each attached runner still passes its locked exact role model with `--model`.
 
 ## 5. Validate before publishing
 

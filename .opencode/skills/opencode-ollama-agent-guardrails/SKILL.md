@@ -33,6 +33,7 @@ Reviewer agent:
 - Do not claim success unless the required validation commands passed.
 - Do not weaken tests to pass.
 - Do not let reviewers edit production code.
+- Do not let agents edit resolver-owned prompt model locks ending in `_MODELS.json`.
 - Stop after final signoff so a human can inspect and decide whether to commit.
 
 ## Session Rules

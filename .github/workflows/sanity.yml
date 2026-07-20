@@ -30,6 +30,9 @@ jobs:
       - name: Install zsh
         run: sudo apt-get update && sudo apt-get install -y zsh
 
+      - name: Run model resolver tests
+        run: python3 -m unittest discover -s tests
+
       - name: Check zsh syntax
         run: zsh -n scripts/*.zsh
 

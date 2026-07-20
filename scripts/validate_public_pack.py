@@ -19,6 +19,9 @@ REQUIRED_FILES = [
     "project.local.env.example",
     ".opencode/agents/minimax-builder.md",
     ".opencode/agents/glm-reviewer.md",
+    ".opencode/agents/model-inference-smoke.md",
+    ".opencode/agents/model-tool-smoke.md",
+    ".opencode/model-smoke/FIXTURE.txt",
     "templates/PROMPT_CODER_TEMPLATE.md",
     "templates/PROMPT_REVIEWER_TEMPLATE.md",
     "templates/SESSION_README_TEMPLATE.md",
@@ -27,6 +30,8 @@ REQUIRED_FILES = [
     "scripts/run_reviewer.zsh",
     "scripts/run_prompt_agents.zsh",
     "scripts/start_headless_server.zsh",
+    "scripts/model_resolver.py",
+    "scripts/model_runtime.zsh",
     "scripts/redact_sessions.py",
     "scripts/validate_public_pack.py",
     "scripts/doctor.zsh",
@@ -40,6 +45,9 @@ REQUIRED_FILES = [
     "docs/model-matrix.md",
     "docs/release-checklist.md",
     "examples/tiny-python-app/README.md",
+    "tests/test_model_resolver.py",
+    "tests/test_launcher_integration.py",
+    "tests/test_model_resolver_live.py",
 ]
 
 REQUIRED_SKILLS = [

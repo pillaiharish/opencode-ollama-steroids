@@ -29,7 +29,13 @@ Each task gets a folder:
 agent-sessions/<project-slug>/<prompt-id>/
 ```
 
-The builder writes plans, implementation notes, test results, fix notes, and current state. The reviewer writes plan reviews, implementation reviews, and final signoff.
+Before either agent runs, the model resolver selects the highest stable numeric `:cloud` ID in the installed OpenCode CLI's refreshed Ollama catalog for each configured family. It verifies exact cloud-manifest readiness plus separate no-tools inference and controlled-file-read sentinels, then atomically writes a prompt-scoped model lock. That exact pair remains fixed for the prompt unless a human explicitly uses `--refresh-models`.
+
+The prompt lock is authoritative and resolver-owned. A prompt-scoped filesystem guard serializes concurrent first runs. Replacement is transactional across both roles, and a failed refresh preserves the previous lock byte-for-byte. A compatible ignored last-known-good cache may be used only when catalog discovery fails; runtime verification failures fail closed.
+
+OpenCode and Ollama version changes re-verify the same locked pair. Catalog absence alone is not runtime disappearance. The reusable localhost server has no prompt model state: attached launchers pass the resolved role ID explicitly with `--model` and reinforce agent mappings through runtime configuration. OpenCode's `small_model` remains independent.
+
+The builder writes plans, implementation notes, test results, fix notes, and current state. The reviewer writes plan reviews, implementation reviews, and final signoff. Neither agent may edit the resolver-owned model lock.
 
 Raw logs are useful locally, but they are ignored and not public material.
 
